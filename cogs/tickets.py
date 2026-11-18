@@ -1,14 +1,30 @@
+
 import discord
 from discord.ext import commands
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import config
 import database as db
 from utils.views import PanelView, TicketControlView, TicketModeView
 from utils.transcript import build_transcript_html
 
+
 OWNER_ID = 875751530584748132
 BRAND_IMAGE = "https://i.imgur.com/xOUSKMD.png"
 RED = discord.Color.from_rgb(255, 0, 0)
+
+# =========================
+# HORÁRIO DE ATENDIMENTO
+# =========================
+
+SUPPORT_TIMEZONE = ZoneInfo("America/Sao_Paulo")
+SUPPORT_START_HOUR = 10
+
+
+def is_support_open():
+    now = datetime.now(SUPPORT_TIMEZONE)
+    return now.hour >= SUPPORT_START_HOUR
 
 
 def is_owner(user_id: int) -> bool:
@@ -59,7 +75,10 @@ class Tickets(commands.Cog):
 
         # Bloqueia áudio e vídeo antes mesmo de chamar a IA
         if message.flags.voice or any(
-            a.content_type and (a.content_type.startswith("audio/") or a.content_type.startswith("video/")) 
+            a.content_type and (
+                a.content_type.startswith("audio/")
+                or a.content_type.startswith("video/")
+            )
             for a in message.attachments
         ):
             return
@@ -81,10 +100,10 @@ class Tickets(commands.Cog):
         ):
             return
 
-        # Converte o aiosqlite.Row para dict para podermos usar .get() sem erro
+        # Converte o aiosqlite.Row para dict
         ticket_dict = dict(ticket)
-        
-        # Só chama a IA se o cliente tiver clicado no botão "Falar com a IA"
+
+        # Só chama a IA se o cliente escolheu atendimento por IA
         if ticket_dict.get("ticket_type") != "ai":
             return
 
@@ -163,6 +182,10 @@ async def setup(bot):
     await bot.add_cog(Tickets(bot))
 
 
+# =========================
+# CRIAÇÃO DE TICKETS
+# =========================
+
 async def create_ticket_channel(
     interaction: discord.Interaction,
     category: str
@@ -173,6 +196,21 @@ async def create_ticket_channel(
     if guild is None:
         await interaction.response.send_message(
             "❌ Este recurso só funciona dentro do servidor.",
+            ephemeral=True
+        )
+        return
+
+    # Verifica o horário de atendimento de Brasília
+    if not is_support_open():
+        await interaction.response.send_message(
+            "🔴 **FORA DO HORÁRIO DE ATENDIMENTO**\n\n"
+            "Nosso atendimento está encerrado no momento.\n\n"
+            "🕙 **Horário de funcionamento:**\n"
+            "・Abertura: 10:00\n"
+            "・Encerramento: 00:00\n\n"
+            "Por favor, retorne a partir das 10:00 "
+            "para abrir seu ticket.\n\n"
+            "Agradecemos a compreensão!",
             ephemeral=True
         )
         return
@@ -197,10 +235,14 @@ async def create_ticket_channel(
     await interaction.response.defer(ephemeral=True, thinking=True)
 
     try:
-        bot_member = guild.me or guild.get_member(interaction.client.user.id)
+        bot_member = guild.me or guild.get_member(
+            interaction.client.user.id
+        )
 
         overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False
+            ),
             user: discord.PermissionOverwrite(
                 view_channel=True,
                 send_messages=True,
@@ -268,14 +310,22 @@ async def create_ticket_channel(
         )
 
     except Exception as exc:
-        print(f"[tickets] ERRO ao criar canal: {type(exc).__name__}: {exc}")
+        print(
+            f"[tickets] ERRO ao criar canal: "
+            f"{type(exc).__name__}: {exc}"
+        )
         await interaction.followup.send(
-            "❌ Não consegui criar o ticket. Verifique as permissões do bot.",
+            "❌ Não consegui criar o ticket. "
+            "Verifique as permissões do bot.",
             ephemeral=True
         )
         return
 
-    ticket_id = await db.create_ticket(channel.id, user.id, category)
+    ticket_id = await db.create_ticket(
+        channel.id,
+        user.id,
+        category
+    )
 
     embed = discord.Embed(
         title=f"🎫・ATENDIMENTO #{ticket_id}",
@@ -284,7 +334,8 @@ async def create_ticket_channel(
             "**Como podemos ajudar?**\n"
             "Descreva sua situação em uma mensagem.\n\n"
             "🔒 **Canal privado**\n"
-            "Somente você, o responsável autorizado e os cargos configurados podem visualizar este canal."
+            "Somente você, o responsável autorizado e os cargos "
+            "configurados podem visualizar este canal."
         ),
         color=RED,
         timestamp=discord.utils.utcnow()
@@ -292,12 +343,28 @@ async def create_ticket_channel(
 
     embed.set_author(
         name="QZZ Community • Suporte",
-        icon_url=(guild.icon.url if guild.icon else interaction.client.user.display_avatar.url)
+        icon_url=(
+            guild.icon.url
+            if guild.icon
+            else interaction.client.user.display_avatar.url
+        )
     )
 
-    embed.add_field(name="👤 Aberto por", value=user.mention, inline=True)
-    embed.add_field(name="📂 Categoria", value=category, inline=True)
-    embed.add_field(name="📌 Status", value="🟢 Em aberto", inline=True)
+    embed.add_field(
+        name="👤 Aberto por",
+        value=user.mention,
+        inline=True
+    )
+    embed.add_field(
+        name="📂 Categoria",
+        value=category,
+        inline=True
+    )
+    embed.add_field(
+        name="📌 Status",
+        value="🟢 Em aberto",
+        inline=True
+    )
 
     embed.set_image(url=BRAND_IMAGE)
     embed.set_footer(
@@ -305,13 +372,17 @@ async def create_ticket_channel(
         icon_url=interaction.client.user.display_avatar.url
     )
 
-    await channel.send(embed=embed, view=TicketControlView())
+    await channel.send(
+        embed=embed,
+        view=TicketControlView()
+    )
 
-    # --- NOVO: EMBED BONITO PARA ESCOLHA DE ATENDIMENTO ---
+    # Escolha do tipo de atendimento
     mode_embed = discord.Embed(
         title="🤖 Como você prefere ser atendido?",
         description=(
-            "Escolha uma das opções abaixo para prosseguir com o seu atendimento:\n\n"
+            "Escolha uma das opções abaixo para prosseguir "
+            "com o seu atendimento:\n\n"
             "🟢 **Atendimento IA 24h**\n"
             "・Respostas imediatas para dúvidas frequentes.\n"
             "・Disponível a qualquer hora do dia.\n\n"
@@ -321,19 +392,26 @@ async def create_ticket_channel(
         ),
         color=RED
     )
+
     mode_embed.set_footer(
-        text="Selecione uma opção abaixo para começar.", 
+        text="Selecione uma opção abaixo para começar.",
         icon_url=interaction.client.user.display_avatar.url
     )
 
-    await channel.send(embed=mode_embed, view=TicketModeView())
-    # -------------------------------------------------------
+    await channel.send(
+        embed=mode_embed,
+        view=TicketModeView()
+    )
 
     await interaction.followup.send(
         f"✅ Seu ticket foi aberto: {channel.mention}",
         ephemeral=True
     )
 
+
+# =========================
+# ASSUMIR TICKET
+# =========================
 
 async def handle_claim(interaction: discord.Interaction):
     if not await owner_only(interaction):
@@ -355,7 +433,10 @@ async def handle_claim(interaction: discord.Interaction):
         )
         return
 
-    await db.claim_ticket(interaction.channel.id, interaction.user.id)
+    await db.claim_ticket(
+        interaction.channel.id,
+        interaction.user.id
+    )
 
     embed = discord.Embed(
         title="🙋 Atendimento assumido",
@@ -369,6 +450,10 @@ async def handle_claim(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed)
 
+
+# =========================
+# FECHAR TICKET
+# =========================
 
 async def handle_close(interaction: discord.Interaction):
     if not await owner_only(interaction):
@@ -399,9 +484,14 @@ async def handle_close(interaction: discord.Interaction):
 
     messages = await db.get_all_messages(ticket["id"])
 
-    buf = build_transcript_html(ticket, messages, interaction.guild.name)
+    buf = build_transcript_html(
+        ticket,
+        messages,
+        interaction.guild.name
+    )
 
     log_channel_id = getattr(config, "LOG_CHANNEL_ID", None)
+
     log_ch = (
         interaction.guild.get_channel(int(log_channel_id))
         if log_channel_id else None
@@ -410,19 +500,40 @@ async def handle_close(interaction: discord.Interaction):
     if log_ch:
         log_embed = discord.Embed(
             title=f"🔒 Ticket #{ticket['id']} encerrado",
-            description="O atendimento foi fechado e o transcript foi gerado.",
+            description=(
+                "O atendimento foi fechado e o transcript foi gerado."
+            ),
             color=RED,
             timestamp=discord.utils.utcnow()
         )
-        log_embed.add_field(name="👤 Usuário", value=f"<@{ticket['user_id']}>", inline=True)
-        log_embed.add_field(name="📂 Categoria", value=ticket["category"], inline=True)
-        log_embed.add_field(name="🛡️ Fechado por", value=interaction.user.mention, inline=True)
+
+        log_embed.add_field(
+            name="👤 Usuário",
+            value=f"<@{ticket['user_id']}>",
+            inline=True
+        )
+        log_embed.add_field(
+            name="📂 Categoria",
+            value=ticket["category"],
+            inline=True
+        )
+        log_embed.add_field(
+            name="🛡️ Fechado por",
+            value=interaction.user.mention,
+            inline=True
+        )
 
         await log_ch.send(
             embed=log_embed,
-            file=discord.File(buf, filename=f"ticket-{ticket['id']}.html")
+            file=discord.File(
+                buf,
+                filename=f"ticket-{ticket['id']}.html"
+            )
         )
 
     await interaction.channel.delete(
-        reason=f"Ticket #{ticket['id']} fechado por {interaction.user} ({interaction.user.id})"
+        reason=(
+            f"Ticket #{ticket['id']} fechado por "
+            f"{interaction.user} ({interaction.user.id})"
+        )
     )
